@@ -1,34 +1,135 @@
 import torch
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 from transformers import pipeline
 import threading
 import time
-import huggingface_hub
 import os
-from dotenv import load_dotenv
+import sys
+import json
 
-# Load environment variables from .env file
-load_dotenv()
+# Try to import optional dependencies with graceful fallbacks
+try:
+    import huggingface_hub
+    HUGGINGFACE_AVAILABLE = True
+except ImportError:
+    HUGGINGFACE_AVAILABLE = False
+    print("Warning: huggingface_hub not installed. Some features may be limited.")
+
+try:
+    from dotenv import load_dotenv
+    # Load environment variables from .env file
+    load_dotenv()
+    DOTENV_AVAILABLE = True
+except ImportError:
+    DOTENV_AVAILABLE = False
+    print("Warning: python-dotenv not installed. Please install with: pip install python-dotenv")
+    print("Continuing without .env support...")
+
+# Default model list - can be expanded
+DEFAULT_MODELS = [
+    "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+    "facebook/opt-125m",
+    "microsoft/phi-1_5",
+    "google/gemma-2b"
+]
+
+# Configuration file path
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
 # Get Hugging Face token from environment variable instead of hardcoding it
-huggingface_token = os.environ.get("HUGGINGFACE_TOKEN")
-if huggingface_token:
-    huggingface_hub.login(token=huggingface_token)
+if HUGGINGFACE_AVAILABLE:
+    huggingface_token = os.environ.get("HUGGINGFACE_TOKEN")
+    if huggingface_token:
+        huggingface_hub.login(token=huggingface_token)
+    else:
+        print("Warning: HUGGINGFACE_TOKEN not found in environment variables.")
+        print("Some models may not be available. Set this in a .env file or as an environment variable.")
+
+# Import the model manager module
+try:
+    from model_manager_ui import ModelManagerUI
+    MODEL_MANAGER_AVAILABLE = True
+except ImportError:
+    MODEL_MANAGER_AVAILABLE = False
+    print("Warning: Model Manager UI modules not found. Model management features will be disabled.")
 
 class WawaChatApplication:
     def __init__(self):
-        self.initialize_ui()
+        # Load configuration
+        self.config = self.load_config()
+        
+        # Create the main window first
+        self.window = tk.Tk()
+        self.window.title("WawaChat")
+        
+        # Initialize all variables needed for UI and theme before UI setup
         self.pipe = None
         self.model_initialized = threading.Event()
+        self.selected_model = tk.StringVar(self.window)
+        self.selected_model.set(self.config.get("model", DEFAULT_MODELS[0]))
+        self.theme_mode = self.config.get("theme", "light")
+        self.chat_history = []
+        self.download_progress = 0
+        self.download_status = "Idle"
+        
+        # Complete the rest of the UI setup
+        self.initialize_ui()
+        
+        # Set up model change handler after UI is initialized
+        self.selected_model.trace_add("write", self.on_model_changed)
+        
+        # Start model initialization
         self.update_status("Initializing model...")
         threading.Thread(target=self.initialize_model, daemon=True).start()
-        # Initialize chat history
-        self.chat_history = []
+
+    def load_config(self):
+        """Load configuration from file or return default config"""
+        try:
+            if os.path.exists(CONFIG_FILE):
+                with open(CONFIG_FILE, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            print(f"Error loading config: {e}")
+        # Default config
+        return {
+            "model": DEFAULT_MODELS[0],
+            "theme": "light"
+        }
+
+    def save_config(self):
+        """Save current configuration to file"""
+        config = {
+            "model": self.selected_model.get(),
+            "theme": self.theme_mode
+        }
+        try:
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception as e:
+            print(f"Error saving config: {e}")
+            self.update_status(f"Error saving config: {e}")
+
+    def on_model_changed(self, *args):
+        """Handle model selection change"""
+        new_model = self.selected_model.get()
+        if self.pipe is not None and new_model != self.config.get("model"):
+            self.update_status(f"Model changed to {new_model}. Restart required to apply.")
+            # Save the new selection
+            self.config["model"] = new_model
+            self.save_config()
 
     def initialize_ui(self):
-        self.window = tk.Tk()
-        self.window.title("WawaChat v1.5")
+        # Don't create Tk instance again, just continue with UI setup
+        # Set app icon if available
+        try:
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
+            if os.path.exists(icon_path):
+                icon = tk.PhotoImage(file=icon_path)
+                self.window.iconphoto(True, icon)
+        except Exception as e:
+            print(f"Could not load icon: {e}")
+        
         # Set window size
         window_width = 815
         window_height = 450
@@ -46,10 +147,13 @@ class WawaChatApplication:
         self.window.resizable(True, True)
 
         # Create main container frames
-        self.chat_frame = tk.Frame(self.window)
+        self.main_frame = tk.Frame(self.window)
+        self.main_frame.pack(expand=True, fill=tk.BOTH)
+        
+        self.chat_frame = tk.Frame(self.main_frame)
         self.chat_frame.pack(side=tk.LEFT, expand=True, fill=tk.BOTH, padx=(10, 5), pady=10)
         
-        self.settings_frame = tk.Frame(self.window, width=200)
+        self.settings_frame = tk.Frame(self.main_frame, width=200)
         self.settings_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(5, 10), pady=10)
         self.settings_frame.pack_propagate(False)
 
@@ -58,6 +162,77 @@ class WawaChatApplication:
 
         # Settings UI components
         self.setup_settings_ui()
+        
+        # Apply theme after all UI elements are created
+        self.apply_theme()
+    
+    def apply_theme(self):
+        """Apply the current theme to all widgets"""
+        if self.theme_mode == "dark":
+            bg_color = "#2d2d2d"
+            fg_color = "#ffffff"
+            text_bg = "#3d3d3d"
+            button_bg = "#555555"
+            button_fg = "#ffffff"
+        else:  # light mode
+            bg_color = "#f0f0f0"
+            fg_color = "#000000"
+            text_bg = "#ffffff"
+            button_bg = "#e0e0e0"
+            button_fg = "#000000"
+        
+        # Apply to main window and frames
+        self.window.config(bg=bg_color)
+        self.main_frame.config(bg=bg_color)
+        self.chat_frame.config(bg=bg_color)
+        self.settings_frame.config(bg=bg_color)
+        
+        # Apply to conversation elements
+        self.conversation_history.config(bg=text_bg, fg=fg_color)
+        self.new_message_input.config(bg=text_bg, fg=fg_color)
+        
+        # Special handling for ttk widgets
+        # For ttk widgets, we need to use a style
+        style = ttk.Style()
+        
+        # Configure the ttk.Label style
+        style.configure('TLabel', background=bg_color, foreground=fg_color)
+        
+        # Apply to status bar (ttk.Label)
+        self.status_bar.configure(style='TLabel')
+        
+        # Update settings widgets if they exist
+        for widget in self.settings_frame.winfo_children():
+            try:
+                if isinstance(widget, tk.Label):
+                    # Regular tk.Label supports bg color and fg color
+                    widget.config(bg=bg_color, fg=fg_color)
+                elif isinstance(widget, ttk.Label):
+                    # ttk.Label styling is handled by the style above
+                    pass
+                elif isinstance(widget, tk.Entry):
+                    # Regular tk.Entry supports bg color and fg color
+                    widget.config(bg=text_bg, fg=fg_color)
+                elif isinstance(widget, ttk.Entry):
+                    # Can't directly style ttk.Entry this way
+                    pass
+                elif isinstance(widget, tk.Button):
+                    widget.config(bg=button_bg, fg=button_fg)
+                elif isinstance(widget, tk.Checkbutton):
+                    widget.config(bg=bg_color, fg=fg_color, selectcolor=button_bg)
+                elif isinstance(widget, tk.Frame):
+                    widget.config(bg=bg_color)
+            except tk.TclError:
+                # Skip widgets that don't support the attempted configuration
+                pass
+    
+    def toggle_theme(self):
+        """Toggle between light and dark themes"""
+        self.theme_mode = "light" if self.theme_mode == "dark" else "dark"
+        self.apply_theme()
+        # Update theme in config
+        self.config["theme"] = self.theme_mode
+        self.save_config()
 
     def setup_conversation_ui(self):
         # Conversation frame and text box
@@ -103,24 +278,37 @@ class WawaChatApplication:
                 select.grid(row=row, column=2, pady=2)
                 return var
 
-        # Numeric and text parameters
+        # Model selection dropdown
+        ttk.Label(self.settings_frame, text="Model:").grid(row=0, column=1, sticky='w', pady=2)
+        model_dropdown = ttk.Combobox(self.settings_frame, textvariable=self.selected_model, values=DEFAULT_MODELS)
+        model_dropdown.grid(row=0, column=2, pady=2, sticky='ew')
+        
+        # Allow custom model input
+        model_dropdown['values'] = DEFAULT_MODELS
+        model_dropdown.bind('<KeyRelease>', lambda e: self.selected_model.set(model_dropdown.get()))
+        
+        # Add a separator after model selection
+        ttk.Separator(self.settings_frame, orient='horizontal').grid(
+            row=1, column=1, columnspan=2, sticky='ew', pady=5)
+
+        # Numeric and text parameters - starting from row 2 now
         self.settings = {
-            "max_new_tokens": add_setting("Max new tokens", 50, 0),
-            "temperature": add_setting("Temperature", 0.5, 1),
-            "top_p": add_setting("Top P", 0.9, 2),
-            "num_beams": add_setting("Num Beams", 2, 3),
+            "max_new_tokens": add_setting("Max new tokens", 50, 2),
+            "temperature": add_setting("Temperature", 0.5, 3),
+            "top_p": add_setting("Top P", 0.9, 4),
+            "num_beams": add_setting("Num Beams", 2, 5),
         }
 
         # Boolean parameters with select dropdowns
         self.boolean_settings = {
-            "truncation": add_setting("Truncation", "True", 4, "select"),
-            "do_sample": add_setting("Do Sample", "True", 5, "select"),
-            "early_stopping": add_setting("Early Stopping", "True", 6, "select"),
+            "truncation": add_setting("Truncation", "True", 6, "select"),
+            "do_sample": add_setting("Do Sample", "True", 7, "select"),
+            "early_stopping": add_setting("Early Stopping", "True", 8, "select"),
         }
 
         # Checkboxes for including/excluding parameters
         self.include_settings = {}
-        row = 7
+        row = 9
         for key in self.settings.keys():
             var = tk.BooleanVar(value=True)
             chk = tk.Checkbutton(self.settings_frame, text=f"Include {key}", var=var)
@@ -135,16 +323,83 @@ class WawaChatApplication:
             self.include_settings[key] = var
             row += 1
 
-        # Clear button
-        clear_btn = tk.Button(self.settings_frame, text="Clear", command=self.clear_conversation)
-        clear_btn.grid(row=row, columnspan=3, pady=10)
+        # Add a separator before buttons
+        row += 1
+        ttk.Separator(self.settings_frame, orient='horizontal').grid(
+            row=row, column=1, columnspan=2, sticky='ew', pady=10)
+        row += 1
 
+        # Button frame for controls
+        button_frame = tk.Frame(self.settings_frame)
+        button_frame.grid(row=row, column=1, columnspan=2, sticky='ew', pady=5)
+        row += 1
+
+        # Clear button
+        clear_btn = tk.Button(button_frame, text="Clear", command=self.clear_conversation)
+        clear_btn.pack(side=tk.LEFT, padx=5)
+        
+        # Theme toggle button
+        theme_btn = tk.Button(button_frame, text="Toggle Theme", command=self.toggle_theme)
+        theme_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Add a Model Management button if available
+        if MODEL_MANAGER_AVAILABLE:
+            model_mgr_btn = tk.Button(self.settings_frame, text="Manage Model Cache", 
+                                    command=self.open_model_manager)
+            model_mgr_btn.grid(row=row, column=1, columnspan=2, sticky='ew', pady=5)
 
     def initialize_model(self):
-        # Initialize the pipeline with TinyLlama settings
-        self.pipe = pipeline("text-generation", model="TinyLlama/TinyLlama-1.1B-Chat-v1.0", torch_dtype=torch.bfloat16, device_map="auto")
-        self.model_initialized.set()
-        self.update_status("Model ready.")
+        try:
+            self.update_status("Downloading model (this may take a while)...")
+            
+            # Create a progress tracker using a separate thread
+            progress_thread = threading.Thread(target=self.track_download_progress, daemon=True)
+            progress_thread.start()
+            
+            # Add timeout handling for the model initialization
+            try:
+                # Initialize the pipeline with the selected model
+                model_name = self.selected_model.get()
+                
+                self.pipe = pipeline(
+                    "text-generation", 
+                    model=model_name, 
+                    torch_dtype=torch.bfloat16, 
+                    device_map="auto",
+                    model_kwargs={"low_cpu_mem_usage": True}  # Add this to reduce memory usage
+                )
+                
+                # Stop the progress tracking
+                self.download_status = "Complete"
+                self.model_initialized.set()
+                self.update_status(f"Model {model_name} ready.")
+            except Exception as e:
+                self.download_status = "Error"
+                self.update_status(f"Error initializing model: {str(e)}")
+                print(f"Model initialization error: {str(e)}")
+        except Exception as e:
+            self.download_status = "Error"
+            self.update_status(f"Error in model initialization: {str(e)}")
+            print(f"Critical error in model thread: {str(e)}")
+
+    def track_download_progress(self):
+        """Track and display model download progress"""
+        self.download_status = "Downloading"
+        progress_chars = ["|", "/", "-", "\\"]
+        i = 0
+        
+        while self.download_status == "Downloading":
+            self.update_status(f"Downloading model {progress_chars[i]} (this may take a while)")
+            i = (i + 1) % len(progress_chars)
+            time.sleep(0.5)
+
+    def open_model_manager(self):
+        """Open the model manager window"""
+        if MODEL_MANAGER_AVAILABLE:
+            ModelManagerUI(self.window)
+        else:
+            messagebox.showwarning("Not Available", 
+                                 "Model Manager is not available. Check console for details.")
 
     def send_message(self, event=None):
             new_message = self.new_message_input.get()
@@ -184,79 +439,77 @@ class WawaChatApplication:
         threading.Thread(target=self.process_response, daemon=True).start()
 
     def process_response(self):
-        # Moved all UI component accesses to the main thread
-        input_text = self.new_message_input.get()
-
         try:
-            # Use the tokenizer's chat template method to format the input text
-            formatted_chat = self.pipe.tokenizer.apply_chat_template(self.chat_history, tokenize=False, add_generation_prompt=True)
-
-            # Collect settings from the UI and use them to generate the response
-            generation_parameters = self.get_generation_parameters()
-
-            response = self.pipe(formatted_chat, **generation_parameters)
-            response_text = response[0]['generated_text']
-
-            # Schedule the conversation history update to be run in the main thread
-            self.window.after(0, lambda: self.update_conversation_history("AI: " + response_text + "\n"))
-        except Exception as e:
-            self.window.after(0, lambda: self.update_status("Error: " + str(e)))
-        else:
-            self.window.after(0, lambda: self.update_status("Model ready."))
-
-    def get_generation_parameters(self):
-        # Retrieve generation parameters from UI components
-        # This function is called within the thread handling response generation
-        parameters = {
-            "max_new_tokens": int(self.settings['max_new_tokens'].get()),
-            "temperature": float(self.settings['temperature'].get()),
-            "top_p": float(self.settings['top_p'].get()),
-            "num_beams": int(self.settings['num_beams'].get()),
-        }
-        # Add boolean settings if necessary, converting them from string to boolean
-        parameters.update({
-            "truncation": self.boolean_settings['truncation'].get() == 'True',
-            "do_sample": self.boolean_settings['do_sample'].get() == 'True',
-            "early_stopping": self.boolean_settings['early_stopping'].get() == 'True',
-        })
-        return parameters
-
-    def process_response(self):
-        try:
+            # Get the message that needs a response
+            self.update_ui_with_status("Generating response...")
+            
+            # Set a timeout for the generation
+            MAX_GENERATION_TIME = 30  # seconds
+            
             # Retrieve UI settings in the main thread context
             generation_parameters = self.get_generation_parameters()
-
+            
             # Use the tokenizer's chat template method to format the input text
-            formatted_chat = self.pipe.tokenizer.apply_chat_template(self.chat_history, tokenize=False, add_generation_prompt=True)
-
+            formatted_chat = self.pipe.tokenizer.apply_chat_template(
+                self.chat_history, tokenize=False, add_generation_prompt=True
+            )
+            
             # Check if formatted_chat is a string
             if not isinstance(formatted_chat, str):
                 raise TypeError("The chat history formatting did not return a string.")
-
+            
+            # Create a timer to update the UI during generation
+            generation_start = time.time()
+            
+            def update_generation_status():
+                elapsed = time.time() - generation_start
+                if elapsed < MAX_GENERATION_TIME:
+                    self.update_ui_with_status(f"Generating response... ({int(elapsed)}s)")
+                    self.window.after(500, update_generation_status)
+                else:
+                    self.update_ui_with_status("Generation is taking longer than expected...")
+            
+            # Start the timer
+            self.window.after(500, update_generation_status)
+            
             # Run the model pipeline and get the response
-            response = self.pipe(formatted_chat, **generation_parameters)
+            response = self.pipe(
+                formatted_chat, 
+                **generation_parameters
+            )
+            
+            # Process the response
             response_text = response[0]['generated_text']
-
-            # Trim the response to the first section if it's too long or contains unwanted parts
-            response_text = self.trim_response(response_text)
-
+            
+            # Add AI response to chat history
+            ai_response = self.trim_response(response_text)
+            self.chat_history.append({"role": "assistant", "content": ai_response})
+            
             # Update the UI with the response
-            self.update_ui_with_response(response_text)
-
+            self.update_ui_with_response(ai_response)
         except Exception as e:
             self.update_ui_with_status(f"Error: {str(e)}")
+            print(f"Response generation error: {e}")
 
     def update_ui_with_response(self, response_text):
         """ Update the conversation history with the AI's response """
-        # This function should only be called from the main thread using `self.window.after`
-        self.conversation_history.insert(tk.END, "AI: " + response_text + "\n")
-        self.conversation_history.yview(tk.END)
-        self.status_bar.config(text="Model ready.")
+        def update():
+            self.conversation_history.config(state=tk.NORMAL)
+            self.conversation_history.insert(tk.END, "AI: " + response_text + "\n")
+            self.conversation_history.config(state=tk.DISABLED)
+            self.conversation_history.yview(tk.END)
+            self.status_bar.config(text="Model ready.")
+        
+        # Schedule the update to be run in the main thread
+        self.window.after(0, update)
 
     def update_ui_with_status(self, status_message):
         """ Update the status bar with the provided message """
-        # This function should only be called from the main thread using `self.window.after`
-        self.status_bar.config(text=status_message)
+        def update():
+            self.status_bar.config(text=status_message)
+        
+        # Schedule the update to be run in the main thread
+        self.window.after(0, update)
 
     def trim_response(self, response_text):
         """ Post-process the response to trim unwanted parts """
@@ -284,6 +537,37 @@ class WawaChatApplication:
         self.conversation_history.config(state=tk.NORMAL)
         self.conversation_history.delete('1.0', tk.END)
         self.conversation_history.config(state=tk.DISABLED)
+
+    def get_generation_parameters(self):
+        """Collect generation parameters from UI settings"""
+        parameters = {}
+        
+        # Add numeric parameters if they are included
+        for key in self.settings.keys():
+            if self.include_settings[key].get():
+                try:
+                    # Convert values to appropriate types
+                    if key == "max_new_tokens" or key == "num_beams":
+                        parameters[key] = int(self.settings[key].get())
+                    else:
+                        parameters[key] = float(self.settings[key].get())
+                except (ValueError, TypeError):
+                    # Use default values if conversion fails
+                    if key == "max_new_tokens":
+                        parameters[key] = 50
+                    elif key == "temperature":
+                        parameters[key] = 0.5
+                    elif key == "top_p":
+                        parameters[key] = 0.9
+                    elif key == "num_beams":
+                        parameters[key] = 2
+        
+        # Add boolean parameters if they are included
+        for key in self.boolean_settings.keys():
+            if self.include_settings[key].get():
+                parameters[key] = self.boolean_settings[key].get() == "True"
+        
+        return parameters
 
     def run(self):
         self.window.mainloop()

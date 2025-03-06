@@ -1,71 +1,128 @@
 # WawaChat
 
-A lightweight chat application powered by TinyLlama, providing a simple interface for conversational AI.
+A lightweight desktop chat application powered by TinyLlama for local AI conversation.
 
-![WawaChat Screenshot](screenshots/wawachat_screenshot.png) <!-- Add a screenshot later -->
+![WawaChat Screenshot](screenshot.png)
 
 ## Features
 
-- Interactive chat interface with TinyLlama AI model
+- Chat interface powered by TinyLlama LLM
 - Customizable generation parameters
-- Real-time status updates
-- Conversation history management
-- Simple and intuitive user interface
-
-## Requirements
-
-- Python 3.8 or higher
-- PyTorch
-- Transformers
-- Huggingface Hub
+- Cross-platform desktop application
+- Runs locally for privacy
 
 ## Installation
 
-1. Clone this repository:
-   ```
-   git clone https://github.com/yourusername/WawaChat.git
-   cd WawaChat
-   ```
+### Prerequisites
 
-2. Install the required packages:
-   ```
-   pip install -r requirements.txt
-   ```
+- Python 3.8 or higher
+- GPU recommended for faster inference (but CPU works too)
 
-3. Set up your Hugging Face API token:
-   - Create a `.env` file in the root directory (copy from `.env.example`)
-   - Add your Hugging Face token:
-     ```
-     HUGGINGFACE_TOKEN=your_token_here
-     ```
-   - You can get your token from https://huggingface.co/settings/tokens
+### Setup
+
+#### Option 1: Using the setup script (recommended)
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/wawachat.git
+cd wawachat
+```
+
+2. Run the setup script:
+```bash
+# For macOS/Linux
+chmod +x setup.sh
+./setup.sh
+
+# For Windows
+./setup.sh
+```
+
+3. Edit the `.env` file to add your Hugging Face token:
+```
+HUGGINGFACE_TOKEN=your_token_here
+```
 
 4. Run the application:
-   ```
-   python wawachat-v1.5.py
-   ```
+```bash
+python wawachat-v1.5.py
+```
+
+#### Option 2: Manual setup
+
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/wawachat.git
+cd wawachat
+```
+
+2. Create and activate a virtual environment (optional but recommended):
+```bash
+# For macOS/Linux
+python3 -m venv venv
+source venv/bin/activate
+
+# For Windows
+python -m venv venv
+venv\Scripts\activate
+```
+
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Create a `.env` file with your Hugging Face token:
+```
+HUGGINGFACE_TOKEN=your_token_here
+```
+
+5. Run the application:
+```bash
+python wawachat-v1.5.py
+```
 
 ## Usage
 
-1. Launch the application
-2. Wait for the model to initialize ("Model ready" will appear in the status bar)
-3. Type your message in the input field and press Enter
-4. View the AI's response in the conversation window
+1. Type your message in the input box and press Enter to send
+2. The AI will respond in the conversation window
+3. Adjust generation parameters in the side panel as needed
+4. Use the Clear button to reset the conversation
 
 ## Configuration
 
-You can adjust various parameters in the settings panel:
-- Max new tokens: Controls the length of the generated response
-- Temperature: Controls randomness (higher values = more random)
-- Top P: Controls diversity via nucleus sampling
-- Num Beams: Number of beams for beam search
-- Various boolean parameters like truncation, sampling, and early stopping
+Adjust the following parameters to customize the AI's responses:
+
+- **Max new tokens**: Maximum number of tokens to generate
+- **Temperature**: Controls randomness (higher = more random)
+- **Top P**: Controls diversity via nucleus sampling
+- **Num Beams**: Number of beams for beam search
+- **Truncation**: Whether to truncate input tokens
+- **Do Sample**: Whether to use sampling
+- **Early Stopping**: Whether to stop generation when all beams are finished
+
+## Troubleshooting
+
+### ModuleNotFoundError: No module named 'dotenv'
+This error occurs when the python-dotenv package is not installed. Fix it by running:
+```bash
+pip install python-dotenv
+```
+
+### Other missing dependencies
+If you encounter other missing dependencies, make sure to install all requirements:
+```bash
+pip install -r requirements.txt
+```
+
+### The model is loading very slowly
+TinyLlama is a large language model. The first time you run the application, it will download the model which may take some time depending on your internet connection. Subsequent runs will be faster.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT
 
 ## Acknowledgments
 
-- Built with [TinyLlama](https://github.com/jzhang38/TinyLlama)
-- Uses Hugging Face Transformers library
+- [TinyLlama](https://github.com/jzhang38/TinyLlama) for the language model
+- [Hugging Face](https://huggingface.co/) for model hosting
