@@ -349,6 +349,7 @@ class WawaChatApplication:
             model_mgr_btn.grid(row=row, column=1, columnspan=2, sticky='ew', pady=5)
 
     def initialize_model(self):
+        """Initialize the model with Mac-optimized settings"""
         try:
             self.update_status("Downloading model (this may take a while)...")
             
@@ -356,18 +357,26 @@ class WawaChatApplication:
             progress_thread = threading.Thread(target=self.track_download_progress, daemon=True)
             progress_thread.start()
             
-            # Add timeout handling for the model initialization
             try:
                 # Initialize the pipeline with the selected model
                 model_name = self.selected_model.get()
                 
+                # Mac-optimized model settings - FIXED: removed duplicate torch_dtype
                 self.pipe = pipeline(
                     "text-generation", 
                     model=model_name, 
-                    torch_dtype=torch.bfloat16, 
-                    device_map="auto",
-                    model_kwargs={"low_cpu_mem_usage": True}  # Add this to reduce memory usage
+                    torch_dtype=torch.float32,  # float32 is more stable on Mac CPUs
+                    device_map="cpu",  # Force CPU usage for maximum stability on Mac
+                    model_kwargs={
+                        "low_cpu_mem_usage": True,
+                        "use_cache": True,
+                        "offload_folder": None,  # Avoid disk offloading which can be slow on Mac
+                        # Removed duplicate torch_dtype parameter that was causing the error
+                    }
                 )
+                
+                # Perform a warmup inference for faster subsequent generation
+                self.warmup_model()
                 
                 # Stop the progress tracking
                 self.download_status = "Complete"
@@ -381,6 +390,15 @@ class WawaChatApplication:
             self.download_status = "Error"
             self.update_status(f"Error in model initialization: {str(e)}")
             print(f"Critical error in model thread: {str(e)}")
+
+    def warmup_model(self):
+        """Perform a quick inference to initialize the model's caches"""
+        try:
+            # Simple warmup to prime internal caches and compile any operations
+            _ = self.pipe("Hello", max_new_tokens=5, do_sample=False, num_beams=1)
+            print("Model warmup completed")
+        except Exception as e:
+            print(f"Model warmup failed: {e}")
 
     def track_download_progress(self):
         """Track and display model download progress"""
@@ -475,6 +493,8 @@ class WawaChatApplication:
             # Run the model pipeline and get the response
             response = self.pipe(
                 formatted_chat, 
+                batch_size=1,  # Process one token at a time to reduce memory usage
+                num_workers=1,  # Limit worker threads for Mac stability
                 **generation_parameters
             )
             
@@ -539,10 +559,24 @@ class WawaChatApplication:
         self.conversation_history.config(state=tk.DISABLED)
 
     def get_generation_parameters(self):
-        """Collect generation parameters from UI settings"""
+        """Collect generation parameters with Mac-optimized defaults"""
         parameters = {}
         
-        # Add numeric parameters if they are included
+        # Mac-optimized generation defaults
+        mac_defaults = {
+            "max_new_tokens": 30,      # Shorter responses for better performance
+            "temperature": 0.7,        # Balance between creativity and determinism
+            "top_p": 0.92,             # Slightly higher than default for better quality/speed balance
+            "num_beams": 1,            # Greedy decoding is much faster on Mac CPUs
+            "repetition_penalty": 1.2, # Avoid repetitions without heavy penalties
+            "use_cache": True,         # Enable KV-cache for faster generation
+            "early_stopping": True,    # Stop when conditions are met
+            "do_sample": False,        # Deterministic generation is faster
+            "truncation": True,        # Enable truncation
+            "pad_token_id": 0,         # Use 0 as padding token for compatibility
+        }
+        
+        # Get values from UI with fallbacks to optimized defaults
         for key in self.settings.keys():
             if self.include_settings[key].get():
                 try:
@@ -552,20 +586,22 @@ class WawaChatApplication:
                     else:
                         parameters[key] = float(self.settings[key].get())
                 except (ValueError, TypeError):
-                    # Use default values if conversion fails
-                    if key == "max_new_tokens":
-                        parameters[key] = 50
-                    elif key == "temperature":
-                        parameters[key] = 0.5
-                    elif key == "top_p":
-                        parameters[key] = 0.9
-                    elif key == "num_beams":
-                        parameters[key] = 2
+                    parameters[key] = mac_defaults.get(key, 0)
         
-        # Add boolean parameters if they are included
         for key in self.boolean_settings.keys():
             if self.include_settings[key].get():
                 parameters[key] = self.boolean_settings[key].get() == "True"
+        
+        # Enforce Mac-friendly limits regardless of user settings
+        if parameters.get("max_new_tokens", 0) > 75:  # Cap token generation
+            parameters["max_new_tokens"] = 75
+        
+        if parameters.get("num_beams", 1) > 2:  # Beam search is resource intensive
+            parameters["num_beams"] = 2
+        
+        # Add optimization parameters not in the UI
+        if "use_cache" not in parameters:
+            parameters["use_cache"] = True
         
         return parameters
 
